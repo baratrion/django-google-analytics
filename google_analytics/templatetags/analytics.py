@@ -1,36 +1,64 @@
-from django import template
 from django.db import models
 from django.contrib.sites.models import Site
+from django.template import Library, TemplateSyntaxError, Node, loader
+from django.utils.translation import ugettext as _
 
-from django.template import Context, loader
 
+register = Library()
 
-register = template.Library()
-Analytics = models.get_model('googleanalytics', 'analytics')
 
 def do_get_analytics(parser, token):
-    try:
-        # split_contents() knows not to split quoted strings.
-        tag_name, code = token.split_contents()
-    except ValueError:
-        code = None
-   
+    """
+    Usage:
+
+        {% analytics %}
+        or
+        {% analytics "UA-xxxxxx-x" %}
+
+    Extended usage for asyncronous tracking:
+
+        {% analytics async %}
+        or
+        {% analytics "UA-xxxxxx-x" async %}
+
+    """
+    bits = token.contents.split()
+
+    if not (len(bits) >= 1 and len(bits) <= 3):
+        raise TemplateSyntaxError(_("%s tag got invalid number of arguments") % bits[0])
+
+    code = None
+    async = False
+
+    if len(bits) == 2:
+        if bits[1] == 'async':
+            async = True
+        else:
+            code = bits[1]
+    if len(bits) == 3:
+        if bits[2] != 'async':
+            raise TemplateSyntaxError(_("if given, second argument to %s tag must be 'async'") % bits[0])
+        code = bits[1]
+        async = True
+
     if not code:
         current_site = Site.objects.get_current()
     else:
         if not (code[0] == code[-1] and code[0] in ('"', "'")):
-            raise template.TemplateSyntaxError, "%r tag's argument should be in quotes" % tag_name
+            raise TemplateSyntaxError(_("%s tag's analytics code should be in quotes") % bits[0])
         code = code[1:-1]
         current_site = None
-    return AnalyticsNode(current_site, code)
-    
-class AnalyticsNode(template.Node):
-    def __init__(self, site=None, code=None):
+
+    return AnalyticsNode(current_site, code, async)
+
+
+class AnalyticsNode(Node):
+    def __init__(self, site=None, code=None, async=False):
         self.site = site
         self.code = code
-        
+        self.async = async
+
     def render(self, context):
-        content = ''
         if self.site:
             code_set = self.site.analytics_set.all()
             if code_set:
@@ -41,14 +69,12 @@ class AnalyticsNode(template.Node):
             code = self.code
         else:
             return ''
-        
-        if code.strip() != '':
-            t = loader.get_template('google_analytics/analytics_template.html')
-            c = Context({
-                'analytics_code': code,
-            })
-            return t.render(c)
-        else:
-            return ''
-        
+
+        template = 'google_analytics/analytics_template.html'
+
+        if self.async:
+            template = 'google_analytics/analytics_template_async.html'
+
+        return loader.render_to_string(template, {'analytics_code': code})
+
 register.tag('analytics', do_get_analytics)
